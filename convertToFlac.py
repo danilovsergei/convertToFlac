@@ -160,7 +160,7 @@ class CueConverter():
         inconsistency between track numbers in cue and actual files in the dir.
         it confuses tagging algorithm. Just remove it since it useless.
         """
-        for pregap_file in glob.glob(os.path.join(temp_dir, '*pregap.flac')):
+        for pregap_file in glob.glob(os.path.join(glob.escape(temp_dir), '*pregap.flac')):
             os.remove(pregap_file)
 
     def parse_cue_file(self):
@@ -230,7 +230,8 @@ class FileUtils():
 
     @staticmethod
     def clean_up_old_dirs(src_dir):
-        for old_dir in glob.glob(os.path.join(src_dir, TMP_DIR_PREFIX+'*')):
+        old_dirs = glob.glob(os.path.join(glob.escape(src_dir), TMP_DIR_PREFIX+'*'))
+        for old_dir in old_dirs:
             shutil.rmtree(old_dir)
 
     @staticmethod
@@ -258,7 +259,7 @@ class FileUtils():
 class CueToFlacTagUtils():
     @staticmethod
     def tag_files(files_dir, cue_album, current_disc_id):
-        files = glob.glob(os.path.join(files_dir, '*.*'))
+        files = glob.glob(os.path.join(glob.escape(files_dir), '*.*'))
         files.sort(key=os.path.getmtime)
         for track_id, file in enumerate(files):
             CueToFlacTagUtils.tag_single_file(file, cue_album, current_disc_id, track_id)
