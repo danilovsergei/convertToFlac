@@ -1,22 +1,25 @@
 #!/usr/bin/python
-from os import listdir
-from os.path import isfile, join
-import os
 import argparse
-from subprocess import call,check_output
-import shlex
-import tempfile
-import subprocess
 import glob
-import re
-import shutil
-import codecs
 import logging
 import logging.config
+import shlex
+import subprocess
+from subprocess import call, check_output
+
+import codecs
+import os
+import re
+import shutil
+import tempfile
+from os import listdir
+from os.path import isfile, join
 
 TMP_DIR_PREFIX = 'cueconvert_'
 logger = logging.getLogger(__name__)
 log_level = 'INFO' # default log level.
+
+SUPPORTED_SOURCE_FORMATS = ['m4a', 'wav', 'ape', 'wv']
 
 class CueAlbum:
     def __init__(self):
@@ -79,44 +82,36 @@ class Converter:
     def __init__(self):
         self.src_dir = os.path.abspath(args.src_dir)
         os.chdir(self.src_dir)
-        # Destination dir will be resolved relatively to src_dir if it
-        #  provided as a relative path
-        self.dest_dir = os.path.abspath(args.dest_dir)
+        self.dest_dir = args.dest_dir
+        self.scan_recursively = not args.only_top_dir
+
+    def __get_dest_dir(self, current_dir):
+        if os.path.isabs(self.dest_dir):
+            return self.dest_dir
+        else:
+            return os.path.join(current_dir, self.dest_dir)
 
     def convert(self):
         if not args.debug:
             FileUtils.clean_up_old_dirs(self.src_dir)
-        files_dict = self.get_files()
+        files_dict = FileUtils.scan_directory(self.src_dir, self.scan_recursively)
         if FileUtils.hasExtension(files_dict, 'cue') and not args.ignore_cue_files:
             for cue_file in files_dict['cue']:
-                CueConverter(cue_file, self.src_dir, self.dest_dir).convert()
+                src_dir = os.path.dirname(cue_file)
+                CueConverter(cue_file, src_dir, self.__get_dest_dir(src_dir)).convert()
         else:
-            self.convert_single_files()
+            for ext in SUPPORTED_SOURCE_FORMATS:
+                if ext in files_dict:
+                    for file in files_dict[ext]:
+                        self.__convert_single_file(file, self.__get_dest_dir(os.path.dirname(file)))
 
-    def get_files(self):
-        files_dict = {}
-        for f in listdir(self.src_dir):
-            full_file_name = join(self.src_dir, f)
-            if isfile(full_file_name):
-                file_ext = os.path.splitext(full_file_name)[1].lower()[1:]
-                if file_ext in files_dict:
-                    files_dict[file_ext].append(full_file_name)
-                else:
-                    files_dict[file_ext] = [full_file_name]
-        return(files_dict)
-
-    def convert_single_files(self):
-        temp_dir = tempfile.mkdtemp(dir=self.src_dir, prefix=TMP_DIR_PREFIX)
-        onlyfiles = [f for f in listdir(self.src_dir) if isfile(join(self.src_dir, f))]
-        try:
-            for sourceFile in onlyfiles:
-                destFile=join(temp_dir, os.path.splitext(sourceFile)[0]+".flac")
-                logging.info('Writing temp flac file: %s', destFile)
-                call(["ffmpeg", "-i", sourceFile, destFile])
-            FileUtils.move_to_newdir(temp_dir, self.dest_dir)
-        finally:
-            if not args.debug:
-                shutil.rmtree(temp_dir)
+    def __convert_single_file(self, src_file, dest_dir):
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir)
+        filename = os.path.basename(os.path.splitext(src_file)[0])
+        destFile = os.path.join(dest_dir, filename + '.flac')
+        logging.info('Writing flac file: %s', destFile)
+        call(["ffmpeg", "-i", src_file, destFile])
 
 class CueConverter():
     FIRST_TRACK_START_NUMBER = 1
@@ -256,6 +251,27 @@ class FileUtils():
         finally:
             f.close()
 
+    @staticmethod
+    def scan_directory(src_dir, recursive):
+        files_dict = {}
+        FileUtils.__scan_directory_rec(src_dir, files_dict, recursive)
+        return files_dict
+
+    @staticmethod
+    def __scan_directory_rec(src_dir, files_dict, recursive):
+        for f in listdir(src_dir):
+            full_file_name = join(src_dir, f)
+            if isfile(full_file_name):
+                file_ext = os.path.splitext(full_file_name)[1].lower()[1:]
+                if file_ext in files_dict:
+                    files_dict[file_ext].append(full_file_name)
+                else:
+                    files_dict[file_ext] = [full_file_name]
+            else:
+                if recursive:
+                    FileUtils.__scan_directory_rec(full_file_name, files_dict, recursive)
+
+
 class CueToFlacTagUtils():
     @staticmethod
     def tag_files(files_dir, cue_album, current_disc_id):
@@ -287,11 +303,16 @@ def parse_ags():
         epilog=os.linesep.join([
             'Examples:',
             '-src_dir=/music/cue --dest_dir=/music/flac',
-            '  takes everything from /music/cue and converts it to /music/flac',
+            '  takes everything recursively from /music/cue and converts it to /music/flac.'
+            '  all underlying directory structure will be flatten when absolute dest_dir path specified',
             '--src_dir=/music/cue --dest_dir=flac',
-            '  takes everything from /music/cue and converts it to /music/cue/flac'
+            '  takes everything from /music/cue and converts it to /music/cue/flac',
+            '  each subdirectory will have it own flac dir when relative dest_dir specified',
             '--src_dir=/music/cue --dest_dir=flac --fallback_cue_encoding=cp1251',
-            ' forces converter to read cue file using cp1251 encoding if it fails to read it as unicode.'
+            ' forces converter to read cue file using cp1251 encoding if it fails to read it as unicode.',
+            '--src_dir=/music/cue --dest_dir=flac --only_top_dir',
+            ' only the files in /music/cue will be scanned.'
+            ' all subdirs will be egnored'
         ])
     )
     parser.add_argument("--src_dir",
@@ -317,6 +338,8 @@ def parse_ags():
                         )
 
     parser.add_argument("--ignore_cue_files",
+                        action="store_true",
+                        default=False,
                         help=
                         '\n'.join([
                         'If True Any found cue files will be ignored.',
@@ -326,9 +349,20 @@ def parse_ags():
                         )
 
     parser.add_argument("--debug",
+                        action="store_true",
+                        default=False,
                         help=
                         '\n'.join([
                             'Keeps all temp dirs if True.',
+                        ])
+                        )
+
+    parser.add_argument("--only_top_dir",
+                        action="store_true",
+                        default=False,
+                        help=
+                        '\n'.join([
+                            'Scans directories recursively. Default value is True.',
                         ])
                         )
 
